@@ -28,3 +28,26 @@ Tooling:
 - GitHub Actions CI (lint + format check + tests)
 
 > The app code is added in subsequent milestones. Follow the Milestone plan in issues/PRs or the project board.
+
+```mermaid
+flowchart TD
+    A[User] --> B[Frontend: React UI]
+    B --> C[Backend: Node.js + Express API]
+    C --> D[MongoDB Database]
+
+    A -->|Register/Login| C
+    C -->|Auth (JWT)| B
+
+    B -->|Create Board| C
+    C -->|Save Board| D
+
+    B -->|Add Task| C
+    C -->|Insert Task| D
+
+    B -->|Move Task| C
+    C -->|Update Task Position| D
+
+    B -->|Update/Delete Task| C
+    C -->|Modify/Delete Task| D
+
+    D -->|Return Data| C -->|Return JSON| B -->|Display Board| A
