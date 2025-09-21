@@ -1,0 +1,30 @@
+{
+  "name": "taskforge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TaskForge monorepo: AngularJS + Node/Express + Socket.IO Kanban app.",
+  "workspaces": ["apps/*"],
+  "engines": { "node": ">=20.0.0" },
+  "scripts": {
+    "prepare": "husky install",
+    "lint": "eslint . --ext .js,.cjs,.mjs --ignore-path .gitignore",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "npm run -w @taskforge/server test",
+    "ci": "npm run lint && npm run format:check && npm test"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "18.6.1",
+    "@commitlint/config-conventional": "18.6.1",
+    "eslint": "8.57.0",
+    "eslint-config-prettier": "9.1.0",
+    "eslint-plugin-import": "2.29.1",
+    "husky": "9.0.11",
+    "lint-staged": "15.2.2",
+    "prettier": "3.3.3"
+  },
+  "lint-staged": {
+    "*.{js,cjs,mjs,json,md,css,scss}": ["prettier --write"],
+    "apps/**/src/**/*.js": ["eslint --max-warnings=0"]
+  }
+}
