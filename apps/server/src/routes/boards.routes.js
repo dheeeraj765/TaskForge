@@ -1,134 +1,139 @@
+// path: apps/server/src/routes/boards.routes.js
 const express = require('express');
-const { z } = require('zod');
 const { StatusCodes } = require('http-status-codes');
 const mongoose = require('mongoose');
 const Board = require('../models/Board');
-const List = require('../models/List');
-const Card = require('../models/Card');
-const Comment = require('../models/Comment');
-const { authRequired } = require('../middleware/auth');
 
 const router = express.Router();
-router.use(authRequired);
 
-const createBoardSchema = z.object({
-  title: z.string().min(1).max(140),
-});
+// Helpers
+function userIsMember(board, userId) {
+  if (!board || !userId) return false;
+  const uid = String(userId);
+  if (String(board.ownerId) === uid) return true;
+  if (Array.isArray(board.members)) {
+    return board.members.some(m => String(m.userId) === uid);
+  }
+  return false;
+}
 
-// GET /api/boards -> my boards
+async function loadBoard(req, res, next) {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(StatusCodes.BAD_REQUEST).json({ error: { message: 'Invalid board id' } });
+  }
+  const board = await Board.findById(id);
+  if (!board) {
+    return res.status(StatusCodes.NOT_FOUND).json({ error: { message: 'Board not found' } });
+  }
+  req.board = board;
+  return next();
+}
+
+function ensureMember(req, res, next) {
+  if (!userIsMember(req.board, req.user?.sub)) {
+    return res.status(StatusCodes.FORBIDDEN).json({ error: { message: 'Not a member' } });
+  }
+  return next();
+}
+
+// GET /api/boards → list my boards (owner or member)
 router.get('/', async (req, res) => {
-  const userId = req.user.sub;
-
-  const boards = await Board.find({
-    $or: [{ ownerId: userId }, { 'members.userId': userId }],
-    archived: { $ne: true },
-  })
-    .sort({ updatedAt: -1 })
-    .lean();
-
-  res.status(StatusCodes.OK).json({
-    boards: boards.map((b) => ({
-      id: String(b._id),
-      title: b.title,
-      ownerId: String(b.ownerId),
-      membersCount: (b.members || []).length + 1,
-      createdAt: b.createdAt,
-      updatedAt: b.updatedAt,
-    })),
-  });
-});
-
-// POST /api/boards -> create board
-router.post('/', async (req, res) => {
   try {
-    const { title } = createBoardSchema.parse(req.body);
-    const ownerId = req.user.sub;
+    const uid = req.user.sub;
+    const boards = await Board.find({
+      $or: [{ ownerId: uid }, { 'members.userId': uid }]
+    })
+      .sort({ updatedAt: -1 })
+      .lean({ getters: true, virtuals: true }); // lightweight
 
-    const board = await Board.create({
-      title,
-      ownerId,
-      members: [{ userId: ownerId, role: 'owner' }],
-    });
-
-    res.status(StatusCodes.CREATED).json({
-      board: {
-        id: String(board._id),
-        title: board.title,
-        ownerId: String(board.ownerId),
-        createdAt: board.createdAt,
-        updatedAt: board.updatedAt,
-      },
-    });
+    return res.json(boards || []);
   } catch (err) {
-    if (err.name === 'ZodError') {
-      return res
-        .status(StatusCodes.BAD_REQUEST)
-        .json({ error: { message: 'Invalid input', details: err.flatten?.() } });
-    }
+    console.error('GET /boards failed:', err);
     return res
       .status(StatusCodes.INTERNAL_SERVER_ERROR)
-      .json({ error: { message: 'Failed to create board' } });
+      .json({ error: { message: 'Failed to fetch boards' } });
   }
 });
 
-// GET /api/boards/:boardId -> get single board (auth: member or owner)
-router.get('/:boardId', async (req, res) => {
-  const { boardId } = req.params;
-  if (!mongoose.Types.ObjectId.isValid(boardId)) {
-    return res.status(StatusCodes.NOT_FOUND).json({ error: { message: 'Board not found' } });
-  }
+// POST /api/boards → create board
+router.post('/', async (req, res) => {
+  try {
+    const ownerId = req.user.sub;
+    const title = String(req.body?.title || req.body?.name || '').trim();
+    if (!title) {
+      return res.status(StatusCodes.BAD_REQUEST).json({ error: { message: 'Title is required' } });
+    }
 
-  const board = await Board.findById(boardId).lean();
-  if (!board) {
-    return res.status(StatusCodes.NOT_FOUND).json({ error: { message: 'Board not found' } });
-  }
-  if (!Board.userIsMember(board, req.user.sub)) {
-    return res.status(StatusCodes.FORBIDDEN).json({ error: { message: 'Forbidden' } });
-  }
+    const data = {
+      title,
+      ownerId,
+      // Keep any optional fields you support:
+      description: req.body?.description || '',
+      members: Array.isArray(req.body?.members) ? req.body.members : []
+    };
 
-  res.status(StatusCodes.OK).json({
-    board: {
-      id: String(board._id),
-      title: board.title,
-      ownerId: String(board.ownerId),
-      createdAt: board.createdAt,
-      updatedAt: board.updatedAt,
-    },
-  });
-});
+    const board = await Board.create(data);
 
-// DELETE /api/boards/:boardId -> only owner; cascade delete lists/cards/comments
-router.delete('/:boardId', async (req, res) => {
-  const { boardId } = req.params;
-  if (!mongoose.Types.ObjectId.isValid(boardId)) {
-    return res.status(StatusCodes.NOT_FOUND).json({ error: { message: 'Board not found' } });
-  }
-
-  const board = await Board.findById(boardId);
-  if (!board) {
-    return res.status(StatusCodes.NOT_FOUND).json({ error: { message: 'Board not found' } });
-  }
-  if (String(board.ownerId) !== String(req.user.sub)) {
+    res
+      .status(StatusCodes.CREATED)
+      .set('Location', `/api/boards/${board._id}`)
+      .json(board);
+  } catch (err) {
+    console.error('POST /boards failed:', err);
     return res
-      .status(StatusCodes.FORBIDDEN)
-      .json({ error: { message: 'Only owner can delete board' } });
+      .status(StatusCodes.BAD_REQUEST)
+      .json({ error: { message: err.message || 'Failed to create board' } });
   }
+});
 
-  // Cascade delete
-  const lists = await List.find({ boardId }).select('_id');
-  const listIds = lists.map((l) => l._id);
-  const cards = await Card.find({ boardId }).select('_id');
-  const cardIds = cards.map((c) => c._id);
+// GET /api/boards/:id
+router.get('/:id', loadBoard, ensureMember, async (req, res) => {
+  try {
+    await req.board.populate('ownerId', 'username');
+    return res.json(req.board);
+  } catch (err) {
+    console.error('GET /boards/:id failed:', err);
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json({ error: { message: 'Failed to load board' } });
+  }
+});
 
-  await Comment.deleteMany({ boardId });
-  await Card.deleteMany({ boardId });
-  await List.deleteMany({ boardId });
-  await Board.deleteOne({ _id: boardId });
+// PUT /api/boards/:id
+router.put('/:id', loadBoard, ensureMember, async (req, res) => {
+  try {
+    const update = {};
+    if (typeof req.body?.title === 'string') update.title = req.body.title.trim();
+    if (!update.title && typeof req.body?.name === 'string') update.title = req.body.name.trim();
+    if (typeof req.body?.description === 'string') update.description = req.body.description;
 
-  res.status(StatusCodes.OK).json({
-    success: true,
-    deleted: { lists: listIds.length, cards: cardIds.length },
-  });
+    const updated = await Board.findByIdAndUpdate(req.board._id, update, { new: true });
+    return res.json(updated);
+  } catch (err) {
+    console.error('PUT /boards/:id failed:', err);
+    return res
+      .status(StatusCodes.BAD_REQUEST)
+      .json({ error: { message: err.message || 'Failed to update board' } });
+  }
+});
+
+// DELETE /api/boards/:id
+router.delete('/:id', loadBoard, ensureMember, async (req, res) => {
+  try {
+    if (String(req.board.ownerId) !== req.user.sub) {
+      return res
+        .status(StatusCodes.FORBIDDEN)
+        .json({ error: { message: 'Only owner can delete' } });
+    }
+    await Board.findByIdAndDelete(req.board._id);
+    return res.status(StatusCodes.NO_CONTENT).send();
+  } catch (err) {
+    console.error('DELETE /boards/:id failed:', err);
+    return res
+      .status(StatusCodes.INTERNAL_SERVER_ERROR)
+      .json({ error: { message: 'Failed to delete board' } });
+  }
 });
 
 module.exports = router;

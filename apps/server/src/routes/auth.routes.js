@@ -1,4 +1,3 @@
-// path: apps/server/src/routes/auth.routes.js
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { z } = require('zod');
@@ -55,10 +54,18 @@ function toSafeUser(u) {
 router.post('/register', authLimiter, async (req, res) => {
   try {
     const { username, email, password } = registerSchema.parse(req.body);
+    
+    // ✅ Added: Log incoming body for debug (remove in prod)
+    console.log('🆕 Register attempt:', { username, email }); // No pw log!
+    
     const existing = await User.findOne({ email });
     if (existing) {
-      return res.status(StatusCodes.CONFLICT).json({ error: { message: 'Email already in use' } });
+      console.warn('⚠️ Register conflict:', email);
+      return res.status(StatusCodes.CONFLICT).json({
+        error: { message: 'Email is already in use' }
+      });
     }
+
     const passwordHash = await bcrypt.hash(password, 12);
     const user = await User.create({ username, email, passwordHash });
 
@@ -66,26 +73,49 @@ router.post('/register', authLimiter, async (req, res) => {
     const refreshToken = signRefreshToken(user);
     setRefreshCookie(res, refreshToken);
 
-    return res.status(StatusCodes.CREATED).json({ user: toSafeUser(user), accessToken });
+    console.log('✅ User registered:', user.id);
+    return res.status(StatusCodes.CREATED).json({
+      user: toSafeUser(user),
+      accessToken
+    });
   } catch (err) {
+    // 1. Handle Zod validation error
     if (err.name === 'ZodError') {
-      return res
-        .status(StatusCodes.BAD_REQUEST)
-        .json({ error: { message: 'Invalid input', details: err.flatten() } });
+      return res.status(StatusCodes.BAD_REQUEST).json({
+        error: { message: 'Invalid input', details: err.flatten() }
+      });
     }
-    return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ error: { message: 'Registration failed' } });
+
+    // 2. Handle Mongo duplicate error (e.g. race condition)
+    if (err.code === 11000) {
+      return res.status(StatusCodes.CONFLICT).json({
+        error: { message: 'Email is already in use' }
+      });
+    }
+
+    // 3. Fallback
+    console.error('❌ Registration error:', err); // <-- log in server for debugging
+    return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      error: { message: err.message || 'Unexpected error during registration' }
+    });
   }
 });
 
 router.post('/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = loginSchema.parse(req.body);
+    
+    // ✅ Added: Log for debug
+    console.log('🔑 Login attempt for:', email);
+    
     const user = await User.findOne({ email });
     if (!user) {
+      console.warn('⚠️ Login fail: User not found:', email);
       return res.status(StatusCodes.UNAUTHORIZED).json({ error: { message: 'Invalid credentials' } });
     }
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) {
+      console.warn('⚠️ Login fail: Bad password for:', email);
       return res.status(StatusCodes.UNAUTHORIZED).json({ error: { message: 'Invalid credentials' } });
     }
 
@@ -93,6 +123,7 @@ router.post('/login', authLimiter, async (req, res) => {
     const refreshToken = signRefreshToken(user);
     setRefreshCookie(res, refreshToken);
 
+    console.log('✅ User logged in:', user.id);
     return res.status(StatusCodes.OK).json({ user: toSafeUser(user), accessToken });
   } catch (err) {
     if (err.name === 'ZodError') {
@@ -100,6 +131,7 @@ router.post('/login', authLimiter, async (req, res) => {
         .status(StatusCodes.BAD_REQUEST)
         .json({ error: { message: 'Invalid input', details: err.flatten() } });
     }
+    console.error('❌ Login error:', err); 
     return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ error: { message: 'Login failed' } });
   }
 });
@@ -133,12 +165,20 @@ router.post('/logout', async (req, res) => {
     if (token) {
       try {
         const payload = verifyRefreshToken(token);
-        await User.updateOne({ _id: payload.sub }, { $inc: { tokenVersion: 1 } });
-      } catch (_) {}
+        // ✅ Enhanced: Use findOneAndUpdate for atomic increment (avoids race conditions)
+        await User.findOneAndUpdate(
+          { _id: payload.sub, tokenVersion: payload.tv }, 
+          { $inc: { tokenVersion: 1 } }
+        );
+      } catch (_) {
+        console.warn('⚠️ Logout: Invalid refresh token');
+      }
     }
     clearRefreshCookie(res);
+    console.log('👋 Logout success');
     return res.status(StatusCodes.OK).json({ success: true });
   } catch (err) {
+    console.error('❌ Logout error:', err);
     return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({ error: { message: 'Logout failed' } });
   }
 });

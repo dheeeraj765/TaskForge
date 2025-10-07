@@ -1,4 +1,3 @@
-// path: apps/server/src/models/User.js
 const mongoose = require('mongoose');
 
 const UserSchema = new mongoose.Schema(
@@ -11,7 +10,7 @@ const UserSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Remove this to avoid duplicate index warnings:
-// UserSchema.index({ email: 1 }, { unique: true });
+// ✅ Uncommented: Enforces unique emails at DB level (catches race conditions)
+UserSchema.index({ email: 1 }, { unique: true });
 
 module.exports = mongoose.model('User', UserSchema);

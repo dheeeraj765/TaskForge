@@ -7,17 +7,30 @@ angular.module('taskforge').component('cardModal', {
     onClose: '&',  // onClose({ result })
     onCancel: '&'  // onCancel()
   },
-  controller: function () {
+  controller: function (AuthService, $state) {
     'ngInject';
     this.$onInit = () => {
+      // ✅ Added: Null guard—if invalid data, bail with toast/redirect
+      if (!this.card || !this.lists || !this.lists.length) {
+        console.warn('Invalid modal data:', { card: this.card, listsCount: this.lists?.length });
+        // Optional: Close modal or notify
+        this.onCancel();
+        if (!AuthService.isAuthenticated()) {
+          $state.go('login');  // Redirect if unauthed (upstream 401)
+        }
+        return;
+      }
+
       // Local editable copy
       this.model = {
-        id: this.card.id,
-        listId: this.card.listId,
+        id: this.card.id || this.card._id,  // ✅ Fallback to _id
+        listId: this.card.listId || this.card._id,  // Ensure listId present
         title: this.card.title || '',
         description: this.card.description || '',
         assigneeId: this.card.assigneeId || null
       };
+
+      console.log('📝 Modal init with card:', this.model.id);  // Debug: Confirm population
     };
 
     this.save = () => {
@@ -25,11 +38,36 @@ angular.module('taskforge').component('cardModal', {
         this.form && this.form.$setSubmitted();
         return;
       }
+      // ✅ Added: Validate required fields post-guard
+      if (!this.model.title.trim()) {
+        console.warn('Save blocked: Empty title');
+        return;
+      }
       this.onClose({ result: { action: 'save', model: this.model } });
     };
 
     this.remove = () => {
-      this.onClose({ result: { action: 'delete' } });
+      // ✅ Added: Confirm before delete (UX polish)
+      if (confirm('Delete this card? This cannot be undone.')) {
+        this.onClose({ result: { action: 'delete' } });
+      }
+    };
+
+    // ✅ Added: Reset form on changes (optional, for UX)
+    this.$onChanges = (changes) => {
+      if (changes.card && this.card) {
+        this.model = {
+          id: this.card.id || this.card._id,
+          listId: this.card.listId,
+          title: this.card.title || '',
+          description: this.card.description || '',
+          assigneeId: this.card.assigneeId || null
+        };
+        if (this.form) {
+          this.form.$setPristine();
+          this.form.$setUntouched();
+        }
+      }
     };
   },
   template: `
@@ -72,7 +110,9 @@ angular.module('taskforge').component('cardModal', {
           <md-input-container class="md-block">
             <label>List</label>
             <md-select ng-model="$ctrl.model.listId" aria-label="List select">
-              <md-option ng-repeat="l in $ctrl.lists track by l.id" ng-value="l.id">{{l.title}}</md-option>
+              <md-option ng-repeat="l in $ctrl.lists track by l._id || l.id" ng-value="l.id || l._id">  <!-- ✅ Fallback to _id -->
+                {{l.title}}
+              </md-option>
             </md-select>
           </md-input-container>
         </div>

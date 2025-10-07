@@ -1,35 +1,32 @@
-// Ensure Angular is global before side‑effect modules
+// apps/client/src/main.js
 import angular from 'angular';
 window.angular = angular;
 
-// Side‑effect libs (must load before we create our module)
-require('@uirouter/angularjs');   // 'ui.router'
-require('angular-animate');       // 'ngAnimate'
-require('angular-aria');          // 'ngAria'
-require('angular-messages');      // 'ngMessages'
-require('angular-material');      // 'ngMaterial'
-require('angular-drag-and-drop-lists'); // 'dndLists'
+require('@uirouter/angularjs');
+require('angular-animate');
+require('angular-aria');
+require('angular-messages');
+require('angular-material');
+require('angular-drag-and-drop-lists');
 
-// Styles
 import 'angular-material/angular-material.css';
 import './styles/main.scss';
 
-// 1) Create the AngularJS module FIRST
+// 1) Create module
 const mod = angular.module('taskforge', [
   'ui.router',
   'ngMaterial',
   'ngAnimate',
   'ngAria',
   'ngMessages',
-  'dndLists' // Drag & drop
+  'dndLists'
 ]);
 
-// Env constant (used by services)
-mod.constant('ENV', {
-  API_URL: process.env.API_URL || 'http://localhost:4000'
-});
+// 2) Import ENV and register as constant
+import { ENV } from './config';
+mod.constant('ENV', ENV);
 
-// 2) Now load services/interceptors/components AFTER module exists
+// 3) Load services/interceptors/components
 require('./services/token.store');
 require('./services/api.service');
 require('./services/auth.service');
@@ -44,11 +41,26 @@ require('./components/boards/boards-dashboard.component');
 require('./components/boards/boards-view.component');
 require('./components/card/card-modal.component');
 
+// 4) HTTP defaults
+mod.config(($httpProvider) => {
+  'ngInject';
+  $httpProvider.interceptors.push('authInterceptor');
 
-// 3) Config and routes
+  // IMPORTANT: do NOT force cookies; we’re using the dev proxy + Bearer tokens
+  // $httpProvider.defaults.withCredentials = true; // removed
+
+  delete $httpProvider.defaults.headers.common['X-Requested-With'];
+});
+
+// 5) Theme + routes
 mod.config(($stateProvider, $urlRouterProvider, $locationProvider, $mdThemingProvider) => {
   'ngInject';
-  $mdThemingProvider.theme('default').primaryPalette('indigo').accentPalette('amber');
+
+  $mdThemingProvider.theme('default')
+    .primaryPalette('indigo', { 'hue-1': '50', 'hue-2': '800', 'default': '500' })
+    .accentPalette('blue', { 'default': '500' })
+    .backgroundPalette('grey', { 'default': '50' });
+
   $locationProvider.html5Mode(true);
 
   $stateProvider
@@ -60,39 +72,37 @@ mod.config(($stateProvider, $urlRouterProvider, $locationProvider, $mdThemingPro
   $urlRouterProvider.otherwise('/login');
 });
 
-// Register interceptor
-mod.config(($httpProvider) => {
+// 6) Run block
+mod.run(($state, $transitions, AuthService, SocketService, $rootScope) => {
   'ngInject';
-  $httpProvider.interceptors.push('authInterceptor');
-});
 
-// Route guards
-mod.run(($transitions, AuthService) => {
-  'ngInject';
-  const isProtected = (s) => ['boards', 'board'].includes(s.name);
-  const isAuthPage = (s) => ['login', 'register'].includes(s.name);
+  $transitions.onStart({ to: '*' }, (transition) => {
+    const toState = transition.$to();
+    const isProtected = toState.name === 'boards' || toState.name === 'board';
 
-  $transitions.onStart({ to: (s) => isProtected(s) }, (trans) => {
-    if (AuthService.isAuthenticated()) return true;
-    return AuthService.tryRefresh()
-      .then(() => true)
-      .catch(() => trans.router.stateService.target('login'));
-  });
-
-  $transitions.onStart({ to: (s) => isAuthPage(s) }, (trans) => {
-    if (AuthService.isAuthenticated()) {
-      return trans.router.stateService.target('boards');
+    if (isProtected && !AuthService.isAuthenticated()) {
+      return transition.router.stateService.target('login');
     }
-    return AuthService.tryRefresh()
-      .then(() => trans.router.stateService.target('boards'))
-      .catch(() => true);
-  });
-});
 
-// Helpful boot log
-mod.run(() => {
-  // eslint-disable-next-line no-console
-  console.log('TaskForge booted with AngularJS', angular.version && angular.version.full);
+    if ((toState.name === 'login' || toState.name === 'register') && AuthService.isAuthenticated()) {
+      return transition.router.stateService.target('boards');
+    }
+  });
+
+  $rootScope.$on('$stateChangeSuccess', (event, toState) => {
+    if ((toState.name === 'boards' || toState.name === 'board') && AuthService.isAuthenticated()) {
+      // Guard the call to avoid runtime errors if SocketService isn’t wired yet
+      if (SocketService && typeof SocketService.connect === 'function') {
+        SocketService.connect();
+      }
+    }
+  });
+
+  $rootScope.$on('$httpError', (event, response) => {
+    if (response.status === 401 && typeof AuthService.logout === 'function') {
+      AuthService.logout();
+    }
+  });
 });
 
 export default mod.name;

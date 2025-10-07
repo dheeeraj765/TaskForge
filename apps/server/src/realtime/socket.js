@@ -25,6 +25,17 @@ function setupSocket(httpServer) {
   });
 
   io.on('connection', (socket) => {
+    // ✅ Added: Reconnect handler (client emits 'reauth' with new token)
+    socket.on('reauth', (token, cb) => {
+      try {
+        const payload = jwt.verify(token, config.accessToken.secret);
+        socket.user = payload;
+        cb({ ok: true });
+      } catch (err) {
+        cb({ ok: false, error: 'Invalid token' });
+      }
+    });
+
     // Client asks to join a board room
     socket.on('board:join', async (boardId, cb) => {
       try {
