@@ -26,5 +26,3 @@ Tooling:
 - Husky + lint-staged
 - Conventional Commits (commitlint)
 - GitHub Actions CI (lint + format check + tests)
-
-> The app code is added in subsequent milestones. Follow the Milestone plan in issues/PRs or the project board.
